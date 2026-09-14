@@ -22,16 +22,17 @@ APP.setQuitOnLastWindowClosed(False)
 
 
 class UpgradeTests(unittest.TestCase):
-    def test_legacy_scale_ignored_and_defaults_independent(self):
+    def test_legacy_scale_and_default_character_are_ignored(self):
         with tempfile.TemporaryDirectory() as root:
             atomic_json(Path(root) / 'settings.json', {'interface_scale': 150, 'default_character': 'kokona'})
             store = Store(root)
             self.assertNotIn('interface_scale', store.settings)
+            self.assertNotIn('default_character', store.settings)
             store.active_chat['character'] = 'izuna'
             store.new_chat()
-            self.assertEqual(store.character, 'kokona')
+            self.assertEqual(store.character, 'izuna')
             store.save()
-            self.assertEqual(Store(root).character, 'kokona')
+            self.assertEqual(Store(root).character, 'izuna')
 
     def test_geometry_and_profile_selection(self):
         with tempfile.TemporaryDirectory() as root:
@@ -45,6 +46,7 @@ class UpgradeTests(unittest.TestCase):
                 self.assertEqual(c.chat.width(), saved['width'])
                 self.assertEqual(c.chat.height(), saved['height'])
                 dialog = SettingsDialog(c)
+                self.assertFalse(hasattr(dialog, 'default_character'))
                 dialog.nickname.setText('이즈나 호칭')
                 dialog.current_character.setCurrentIndex(1)
                 self.assertEqual(dialog.nickname.text(), '선생님')
@@ -54,6 +56,12 @@ class UpgradeTests(unittest.TestCase):
                 dialog.reject()
                 self.assertEqual(c.store.character, 'izuna')
                 self.assertNotEqual(c.store.profiles['izuna']['nickname'], '이즈나 호칭')
+                menu = c.menu()
+                character_menu = next(m for m in menu.findChildren(type(menu)) if m.title() == '캐릭터 변경')
+                next(a for a in character_menu.actions() if a.text() == '코코나').trigger()
+                self.assertEqual(c.store.character, 'kokona')
+                c.store.new_chat()
+                self.assertEqual(c.store.character, 'kokona')
             finally:
                 c.shutdown(); c.chat.hide(); c.pet.hide(); c.stocks.hide()
 

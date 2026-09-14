@@ -1,4 +1,4 @@
-이즈나 v0.7 · Windows x64 런타임 포함
+이즈나 v0.8 · Windows x64 런타임 포함
 
 기존 앱을 종료하고 사용자 데이터 폴더를 백업하세요:
 %LOCALAPPDATA%\IzunaDesktop

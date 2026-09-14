@@ -157,14 +157,10 @@ class SettingsDialog(QDialog):
         form2 = QFormLayout(character)
         form2.setSpacing(14)
         self.current_character = QComboBox()
-        self.default_character = QComboBox()
         for cid, info in CHARACTERS.items():
             self.current_character.addItem(info['name'], cid)
-            self.default_character.addItem(info['name'], cid)
         self.current_character.setCurrentIndex(list(CHARACTERS).index(controller.store.character))
-        self.default_character.setCurrentIndex(list(CHARACTERS).index(controller.store.settings['default_character']))
         form2.addRow('현재 대화 캐릭터', self.current_character)
-        form2.addRow('새 대화 기본 캐릭터', self.default_character)
         self.profile_id = controller.store.character
         self.profile_drafts = {cid: dict(profile) for cid, profile in controller.store.profiles.items()}
         identity = self.identity = label(CHARACTERS[controller.store.character]['description'], 'notice')
@@ -375,7 +371,6 @@ class SettingsDialog(QDialog):
         s.update(provider=provider, ollama_url=base, click_effect=self.click_effect.isChecked(),
                  demo=self.demo.isChecked(), model=model, roam=self.roam.isChecked(),
                  remember=self.remember.isChecked(),
-                 default_character=self.default_character.currentData(),
                  pet_opacity=self.pet_opacity.value(),
                  interface_opacity=self.interface_opacity.value(),
                  pet_on_top=self.pet_on_top.isChecked(), chat_on_top=self.chat_on_top.isChecked())
@@ -686,12 +681,7 @@ class ChatWindow(QWidget):
     def change_character(self, index):
         if self.c.busy or index < 0:
             return
-        self.save_draft()
-        self.c.store.active_chat['character'] = self.character_select.currentData()
-        self.reload_chat()
-        self.c.pet.reload_size()
-        self.c.pet.expression('cozy')
-        self.c.persist()
+        self.c.set_character(self.character_select.currentData())
 
     def show_earlier(self):
         self.visible_count += 60
@@ -1515,11 +1505,27 @@ class Controller:
             elif action.data() == 'visibility':
                 action.setText('캐릭터 숨기기' if self.pet.isVisible() else '캐릭터 보이기')
 
+    def set_character(self, cid):
+        if self.busy or cid not in CHARACTERS or cid == self.store.character:
+            return
+        self.chat.save_draft()
+        self.store.active_chat['character'] = cid
+        self.chat.reload_chat()
+        self.pet.reload_size()
+        self.pet.expression('cozy')
+        self.persist()
+
     def menu(self):
         menu = QMenu()
         menu.addAction('캐릭터와 대화', self.open_chat)
         menu.addAction('주식 · 포트폴리오', self.open_stocks)
         menu.addAction('설정', self.open_settings)
+        characters = menu.addMenu('캐릭터 변경')
+        for cid, info in CHARACTERS.items():
+            action = characters.addAction(info['name'], lambda checked=False, key=cid: self.set_character(key))
+            action.setCheckable(True)
+            action.setChecked(cid == self.store.character)
+            action.setEnabled(not self.busy)
         menu.addSeparator()
         walk = menu.addAction('자동 산책')
         walk.setData('roam')

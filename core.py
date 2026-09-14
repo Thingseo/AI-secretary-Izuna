@@ -32,7 +32,7 @@ EMOTIONS.update({
 AI_EMOTIONS = [e for e in EMOTIONS if e not in ('aroused', 'lustful', 'seductive smiling', 'middle finger', 'walking to left', 'walking to right')]
 
 DEFAULTS = dict(provider='openai', ollama_url='http://localhost:11434', click_effect=True,
-                window_geometry={}, investment_options={}, default_character='izuna', pet_opacity=100, interface_opacity=100,
+                window_geometry={}, investment_options={}, pet_opacity=100, interface_opacity=100,
                 pet_on_top=True, chat_on_top=True,
                 profiles={}, provider_models={}, model='gpt-5.6-luna', demo=True, size=260, speed=42,
                 roam=True, remember=True, memo='', nickname='주군',
@@ -79,8 +79,6 @@ class Store:
         self.settings['provider_models'] = {k: v for k, v in self.settings['provider_models'].items() if k in PROVIDERS and isinstance(v, str)}
         self.settings['size'] = max(160, min(400, self.settings['size']))
         self.settings['speed'] = max(15, min(100, self.settings['speed']))
-        if self.settings['default_character'] not in CHARACTERS:
-            self.settings['default_character'] = 'izuna'
         self.settings['pet_opacity'] = max(25, min(100, self.settings['pet_opacity']))
         self.settings['interface_opacity'] = max(35, min(100, self.settings['interface_opacity']))
         self.profiles = self.settings['profiles']
@@ -161,7 +159,7 @@ class Store:
         self.active_chat['messages'] = value
 
     def new_chat(self, character=None, duplicate=False):
-        chat = copy.deepcopy(self.active_chat) if duplicate else self.make_chat('새 대화', character or self.settings['default_character'])
+        chat = copy.deepcopy(self.active_chat) if duplicate else self.make_chat('새 대화', character or self.character)
         if duplicate:
             chat['id'] = uuid.uuid4().hex
             chat['title'] = (chat['title'] + ' 복사')[:60]
