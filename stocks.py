@@ -78,6 +78,9 @@ class MarketClient(QObject):
             self.completed.emit()
             return
         for index, item in enumerate(positions):
+            if item.get('cash'):
+                self.quoteLoaded.emit(index, dict(price=1, percent=None, currency='USD' if item['market'] == 'US' else 'KRW'))
+                continue
             try:
                 symbol = provider_symbol(item['symbol'], item['market'])
             except ValueError as exc:

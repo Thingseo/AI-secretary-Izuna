@@ -13,7 +13,8 @@ from PySide6.QtWidgets import (
     QScrollArea, QLineEdit, QPlainTextEdit, QDialog, QFormLayout, QCheckBox,
     QSpinBox, QDoubleSpinBox, QComboBox, QDialogButtonBox, QMessageBox, QMenu,
     QSystemTrayIcon, QFrame, QTabWidget, QTabBar, QInputDialog, QTableWidget,
-    QTableWidgetItem, QHeaderView, QAbstractItemView,
+    QTableWidgetItem, QHeaderView, QAbstractItemView, QListWidget, QListWidgetItem,
+    QFileDialog, QStackedWidget, QSizePolicy,
 )
 from core import ASSETS, EMOTIONS, Store, KeyVault, build_payload, demo_reply, CHARACTERS, summary_target, build_summary_payload
 from network import ChatClient, ModelCatalog
@@ -38,7 +39,10 @@ QPushButton#primary { color: #102632; background: #81dce8; font-weight: 700; }
 QPushButton#primary:hover { background: #acecf3; }
 QPushButton#chip { background: #192d3d; border: 1px solid #30495d; font-size: 11px; padding: 7px 9px; }
 QPushButton#close { background: transparent; color: #9fb3c4; }
-QLineEdit, QPlainTextEdit, QSpinBox, QComboBox { color: #e6edf5; background: #0e1925; border: 1px solid #344b61; border-radius: 8px; padding: 9px; selection-background-color: #3f637d; }
+QPushButton#close:hover { background: #345b72; color: #ffffff; }
+QPushButton#close:pressed { background: #4b7891; color: #ffffff; }
+QPushButton#close:focus { border: 1px solid #81dce8; }
+QLineEdit, QPlainTextEdit, QSpinBox, QDoubleSpinBox, QComboBox { color: #e6edf5; background: #0e1925; border: 1px solid #344b61; border-radius: 8px; padding: 9px; selection-background-color: #3f637d; }
 QLineEdit:focus, QPlainTextEdit:focus { border: 1px solid #77d8e6; }
 QScrollArea { background: transparent; border: none; }
 QScrollBar:vertical { background: transparent; width: 7px; margin: 0; }
@@ -56,6 +60,7 @@ QMenu::item { padding: 7px 23px; border-radius: 5px; }
 QMenu::item:selected { background: #355269; }
 QTableWidget { background: #0e1925; border: 1px solid #344b61; border-radius: 8px; gridline-color: #263d50; }
 QHeaderView::section { color: #a9bdcc; background: #182939; border: none; padding: 7px; }
+QHeaderView, QTableCornerButton::section { background: #182939; border: none; }
 '''
 
 
@@ -104,6 +109,12 @@ class SettingsDialog(QDialog):
             scroller.setWidget(page)
             tabs.addTab(scroller, title)
         form = QFormLayout(api)
+        mcp_page = QWidget()
+        mcp_layout = QVBoxLayout(mcp_page)
+        mcp_layout.addWidget(label('현재 모델에 외부 도구를 연결합니다. 별도의 AI 모델이 아닙니다.', 'notice'))
+        mcp_layout.addWidget(button('MCP 서버·도구 관리', self.open_mcp))
+        mcp_layout.addStretch()
+        tabs.addTab(mcp_page, '도구·MCP')
         form.setSpacing(14)
         self.demo = QCheckBox('데모 모드 · API 없이 조작해 보기')
         self.demo.setChecked(s['demo'])
@@ -145,7 +156,18 @@ class SettingsDialog(QDialog):
         self.switch_provider()
         form2 = QFormLayout(character)
         form2.setSpacing(14)
-        identity = label(CHARACTERS[controller.store.character]['description'], 'notice')
+        self.current_character = QComboBox()
+        self.default_character = QComboBox()
+        for cid, info in CHARACTERS.items():
+            self.current_character.addItem(info['name'], cid)
+            self.default_character.addItem(info['name'], cid)
+        self.current_character.setCurrentIndex(list(CHARACTERS).index(controller.store.character))
+        self.default_character.setCurrentIndex(list(CHARACTERS).index(controller.store.settings['default_character']))
+        form2.addRow('현재 대화 캐릭터', self.current_character)
+        form2.addRow('새 대화 기본 캐릭터', self.default_character)
+        self.profile_id = controller.store.character
+        self.profile_drafts = {cid: dict(profile) for cid, profile in controller.store.profiles.items()}
+        identity = self.identity = label(CHARACTERS[controller.store.character]['description'], 'notice')
         identity.setWordWrap(True)
         form2.addRow(identity)
         form2.addRow(button('캐릭터 이미지 폴더 열기', self.open_image_folder))
@@ -169,6 +191,7 @@ class SettingsDialog(QDialog):
         self.speed.setRange(15, 100)
         self.speed.setValue(s['speed'])
         form2.addRow('산책 속도', self.speed)
+        self.current_character.currentIndexChanged.connect(self.switch_profile)
         self.roam = QCheckBox('자동으로 산책하기')
         self.roam.setChecked(s['roam'])
         form2.addRow(self.roam)
@@ -180,11 +203,7 @@ class SettingsDialog(QDialog):
         form2.addRow(note)
         screen = QFormLayout(appearance)
         screen.setSpacing(14)
-        self.interface_scale = QSpinBox()
-        self.interface_scale.setRange(75, 150)
-        self.interface_scale.setSuffix(' %')
-        self.interface_scale.setValue(s['interface_scale'])
-        screen.addRow('대화창 크기', self.interface_scale)
+        screen.addRow(label('창 가장자리와 모서리를 드래그해 크기를 조절하세요. 크기와 위치는 자동 저장됩니다.', 'notice'))
         self.pet_opacity = QSpinBox()
         self.pet_opacity.setRange(25, 100)
         self.pet_opacity.setSuffix(' %')
@@ -289,13 +308,36 @@ class SettingsDialog(QDialog):
         self.connection_note.setText(text)
 
     def open_image_folder(self):
-        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.c.store.character_folder()))):
-            self.image_note.setText(str(self.c.store.character_folder()))
+        folder = self.c.store.character_folder(self.current_character.currentData())
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder))):
+            self.image_note.setText(str(folder))
+
+    def open_mcp(self):
+        from mcp_ui import McpDialog
+        McpDialog(self.c, self).exec()
+
+    def capture_profile(self):
+        self.profile_drafts[self.profile_id].update(
+            nickname=self.nickname.text().strip() or CHARACTERS[self.profile_id]['nickname'],
+            persona=self.persona.toPlainText()[:1500], size=self.size.value(), speed=self.speed.value())
+
+    def switch_profile(self):
+        self.capture_profile()
+        self.profile_id = self.current_character.currentData()
+        profile = self.profile_drafts[self.profile_id]
+        self.nickname.setText(profile['nickname'])
+        self.persona.setPlainText(profile['persona'])
+        self.size.setValue(profile['size'])
+        self.speed.setValue(profile['speed'])
+        self.identity.setText(CHARACTERS[self.profile_id]['description'])
+        self.update_image_note()
 
     def update_image_note(self):
         store = self.c.store
         count = sum(store.image_path(e, fallback=False) is not None for e in EMOTIONS)
-        prefix = CHARACTERS[store.character]['prefix']
+        cid = self.current_character.currentData()
+        count = sum(bool(store.image_path(emotion, cid, fallback=False)) for emotion in EMOTIONS)
+        prefix = CHARACTERS[cid]['prefix']
         self.image_note.setText(f'{count}/{len(EMOTIONS)}개 표정 인식 · {prefix}.cozy.webp 등\n없는 표정은 같은 캐릭터의 기본 이미지로 표시해요.')
 
     def reload_images(self):
@@ -333,14 +375,14 @@ class SettingsDialog(QDialog):
         s.update(provider=provider, ollama_url=base, click_effect=self.click_effect.isChecked(),
                  demo=self.demo.isChecked(), model=model, roam=self.roam.isChecked(),
                  remember=self.remember.isChecked(),
-                 interface_scale=self.interface_scale.value(),
+                 default_character=self.default_character.currentData(),
                  pet_opacity=self.pet_opacity.value(),
                  interface_opacity=self.interface_opacity.value(),
                  pet_on_top=self.pet_on_top.isChecked(), chat_on_top=self.chat_on_top.isChecked())
-        c.store.profiles[c.store.character].update(
-            nickname=self.nickname.text().strip() or CHARACTERS[c.store.character]['nickname'],
-            persona=self.persona.toPlainText()[:1500], size=self.size.value(), speed=self.speed.value())
+        self.capture_profile()
+        c.store.profiles.update(self.profile_drafts)
         chat = c.store.active_chat
+        chat['character'] = self.current_character.currentData()
         chat['memo'] = self.memo.toPlainText()[:4000]
         chat['summary'] = self.summary.toPlainText()[:6000].strip()
         if not chat['summary']:
@@ -371,31 +413,36 @@ class DragHeader(QFrame):
 
 class ChatWindow(QWidget):
     def __init__(self, controller):
-        super().__init__(None, Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        super().__init__(None, Qt.Tool | Qt.WindowStaysOnTopHint)
         self.c = controller
         self.setObjectName('chat')
         self.setWindowTitle('이즈나 비서')
         self.resize(420, 570)
         self.setMinimumSize(360, 420)
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(16, 16, 16, 16)
-        outer.setSpacing(12)
+        outer.setContentsMargins(8, 8, 8, 8)
+        outer.setSpacing(5)
         header = DragHeader()
         header.setObjectName('header')
         row = QHBoxLayout(header)
-        row.setContentsMargins(12, 12, 8, 12)
+        row.setContentsMargins(4, 2, 4, 2)
         avatar = self.avatar = QLabel()
         avatar.setPixmap(QPixmap(str(ASSETS / 'Izuna.cozy.webp')).scaled(48, 64, Qt.KeepAspectRatio, Qt.SmoothTransformation))
         avatar.setAttribute(Qt.WA_TransparentForMouseEvents)
-        row.addWidget(avatar)
+        avatar.hide()
         titles = QVBoxLayout()
-        self.character_title = label('이즈나', 'title')
+        self.character_title = label('이즈나')
         self.character_subtitle = label('', 'muted')
         titles.addWidget(self.character_title)
-        titles.addWidget(self.character_subtitle)
+        self.character_subtitle.hide()
         row.addLayout(titles)
         row.addStretch()
+        self.list_button = button('대화 목록', self.show_conversations, 'close')
+        row.addWidget(self.list_button)
+        self.new_button = button('새 대화', self.new_tab, 'close')
+        row.addWidget(self.new_button)
         row.addWidget(button('설정', self.c.open_settings, 'close'))
+        row.addWidget(button('⋯', self.show_more, 'close'))
         close = button('×', self.hide, 'close')
         close.setToolTip('대화창 닫기 · 이즈나는 계속 머물러요')
         row.addWidget(close)
@@ -404,10 +451,13 @@ class ChatWindow(QWidget):
         self.badge = label('', 'badge')
         statusrow.addWidget(self.badge)
         statusrow.addStretch()
-        statusrow.addWidget(button('주식 · 포트폴리오', self.c.open_stocks, 'close'))
         outer.addLayout(statusrow)
+        self.folder_indicator = button('폴더 작업 종료', self.c.clear_folder, 'close')
+        self.folder_indicator.hide()
+        outer.addWidget(self.folder_indicator)
         tabrow = QHBoxLayout()
-        self.tabs = QTabBar()
+        self.tabs = QTabBar(self)
+        self.tabs.hide()  # Index adapter for existing conversation operations; no horizontal tabs.
         self.tabs.setExpanding(False)
         self.tabs.setDrawBase(False)
         self.tabs.setUsesScrollButtons(True)
@@ -415,21 +465,17 @@ class ChatWindow(QWidget):
         self.tabs.customContextMenuRequested.connect(self.tab_menu)
         self.tabs.currentChanged.connect(self.switch_tab)
         self.tabs.tabBarDoubleClicked.connect(self.rename_tab)
-        tabrow.addWidget(self.tabs, 1)
-        self.new_button = button('새 대화', self.new_tab)
         self.new_button.setToolTip('빈 채팅 탭 만들기')
-        tabrow.addWidget(self.new_button)
-        outer.addLayout(tabrow)
         characterrow = QHBoxLayout()
-        self.character_select = QComboBox()
+        self.character_select = QComboBox(self)
+        self.character_select.hide()
         for cid, info in CHARACTERS.items():
             self.character_select.addItem(info['name'] + ' 모드', cid)
         self.character_select.currentIndexChanged.connect(self.change_character)
-        characterrow.addWidget(self.character_select)
         characterrow.addStretch()
         self.more = button('이전 대화 ↑', self.show_earlier, 'close')
-        characterrow.addWidget(self.more)
-        outer.addLayout(characterrow)
+        self.more.setParent(self)
+        self.more.hide()
         self.visible_count = 60
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
@@ -446,10 +492,6 @@ class ChatWindow(QWidget):
         self.scroll_timer.setSingleShot(True)
         self.scroll_timer.timeout.connect(lambda: self.scroll.verticalScrollBar().setValue(self.scroll.verticalScrollBar().maximum()))
         outer.addWidget(self.scroll, 1)
-        chips = QHBoxLayout()
-        for title, text in [('오늘도 수고했어', '오늘 너무 피곤해'), ('집중할 시간', '집중할 수 있게 도와줘'), ('안녕!', '안녕')]:
-            chips.addWidget(button(title, lambda checked=False, t=text: self.c.send(t), 'chip'))
-        outer.addLayout(chips)
         self.status = label('대화할 준비가 됐어요.', 'muted')
         self.status.setWordWrap(True)
         outer.addWidget(self.status)
@@ -463,6 +505,110 @@ class ChatWindow(QWidget):
         inputrow.addWidget(self.sendbutton)
         outer.addLayout(inputrow)
         self.reload_chat()
+        self.geometry_timer = QTimer(self)
+        self.geometry_timer.setSingleShot(True)
+        self.geometry_timer.timeout.connect(self.save_geometry)
+
+    def save_geometry(self, force=False):
+        if (self.isVisible() or force) and not self.isMinimized():
+            rect = self.normalGeometry() if self.isMaximized() else self.geometry()
+            self.c.store.settings['window_geometry'] = dict(x=rect.x(), y=rect.y(), width=rect.width(), height=rect.height())
+            self.c.persist()
+
+    def moveEvent(self, event):
+        super().moveEvent(event)
+        if hasattr(self, 'geometry_timer'):
+            self.geometry_timer.start(350)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, 'geometry_timer'):
+            self.geometry_timer.start(350)
+
+    def hideEvent(self, event):
+        self.save_geometry(force=True)
+        self.save_draft()
+        self.c.persist()
+        super().hideEvent(event)
+
+    def show_more(self):
+        menu = QMenu(self)
+        menu.addAction('폴더 작업 시작…', self.c.choose_folder)
+        menu.addAction('폴더 작업 종료', self.c.clear_folder)
+        menu.addAction('주식 · 포트폴리오', self.c.open_stocks)
+        action = menu.addAction('이전 대화 더 보기', self.show_earlier)
+        action.setEnabled(len(self.c.store.history) > self.visible_count)
+        menu.exec(QCursor.pos())
+
+    def show_conversations(self):
+        if self.c.busy:
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle('대화 목록')
+        dialog.resize(420, 480)
+        layout = QVBoxLayout(dialog)
+        search = QLineEdit()
+        search.setPlaceholderText('대화 제목 검색')
+        listing = QListWidget()
+        layout.addWidget(search)
+        layout.addWidget(listing)
+        def refresh():
+            listing.clear()
+            for chat in self.c.store.chats:
+                if search.text().casefold() not in chat['title'].casefold():
+                    continue
+                timestamp = chat.get('updated_at', '')
+                try:
+                    timestamp = datetime.fromisoformat(timestamp).astimezone().strftime('%Y-%m-%d %H:%M')
+                except ValueError:
+                    timestamp = '수정시간 기록 없음'
+                item = QListWidgetItem(f"{chat['title']}\n{CHARACTERS[chat['character']]['name']} · {timestamp}")
+                item.setData(Qt.UserRole, chat['id'])
+                listing.addItem(item)
+                if chat['id'] == self.c.store.active_id:
+                    listing.setCurrentItem(item)
+        def select(item):
+            index = next(i for i, chat in enumerate(self.c.store.chats) if chat['id'] == item.data(Qt.UserRole))
+            self.switch_tab(index)
+            dialog.accept()
+        def context(pos):
+            item = listing.itemAt(pos)
+            if not item:
+                return
+            ident = item.data(Qt.UserRole)
+            menu = QMenu(dialog)
+            rename = menu.addAction('이름 변경')
+            duplicate = menu.addAction('복제')
+            delete = menu.addAction('삭제')
+            choice = menu.exec(listing.mapToGlobal(pos))
+            self.save_draft()
+            chat = next(c for c in self.c.store.chats if c['id'] == ident)
+            if choice == rename:
+                title, ok = QInputDialog.getText(dialog, '이름 변경', '새 이름', text=chat['title'])
+                if ok and title.strip():
+                    chat['title'] = title.strip()[:60]
+                    chat['updated_at'] = datetime.now().astimezone().isoformat()
+            elif choice == duplicate:
+                self.save_draft()
+                selected = self.c.store.active_id
+                self.c.store.select_chat(ident)
+                self.c.store.new_chat(duplicate=True)
+                self.c.store.select_chat(selected)
+            elif choice == delete:
+                if QMessageBox.question(dialog, '삭제', '이 대화와 기억을 삭제할까요?') == QMessageBox.Yes:
+                    self.save_draft()
+                    self.c.store.delete_chat(ident)
+            self.reload_chat()
+            self.c.pet.reload_size()
+            self.c.persist()
+            refresh()
+        search.textChanged.connect(refresh)
+        listing.itemActivated.connect(select)
+        listing.itemClicked.connect(select)
+        listing.setContextMenuPolicy(Qt.CustomContextMenu)
+        listing.customContextMenuRequested.connect(context)
+        refresh()
+        dialog.exec()
 
     def reload_chat(self):
         self.tabs.blockSignals(True)
@@ -484,6 +630,8 @@ class ChatWindow(QWidget):
         self.reset_messages()
 
     def save_draft(self):
+        if self.c.store.active_chat['draft'] != self.input.text():
+            self.c.store.active_chat['updated_at'] = datetime.now().astimezone().isoformat()
         self.c.store.active_chat['draft'] = self.input.text()
 
     def switch_tab(self, index):
@@ -555,14 +703,16 @@ class ChatWindow(QWidget):
         self.badge.setText('● DEMO · 미연결' if self.c.store.settings['demo'] else '● ' + self.c.store.settings['provider'].capitalize())
         self.badge.setToolTip(self.c.store.settings['model'])
         info = CHARACTERS[self.c.store.character]
-        self.character_title.setText(info['name'])
+        self.character_title.setText(self.c.store.active_chat['title'][:16])
+        self.character_title.setToolTip(self.c.store.active_chat['title'])
+        self.badge.setText(info['name'] + ' · ' + ('데모' if self.c.store.settings['demo'] else self.c.store.settings['provider'] + ' · ' + self.c.store.settings['model']))
         self.character_subtitle.setText(self.c.store.effective_settings['nickname'] + ' 곁의 작은 비서')
         self.input.setPlaceholderText(info['name'] + '에게 말 걸기…')
         self.setWindowTitle(info['name'] + ' 비서')
         path = self.c.store.image_path('cozy')
         pix = QPixmap(str(path)) if path else QPixmap()
         self.avatar.setPixmap(pix.scaled(48, 64, Qt.KeepAspectRatio, Qt.SmoothTransformation) if not pix.isNull() else pix)
-        self.avatar.setVisible(not pix.isNull())
+        self.avatar.hide()
 
     def reset_messages(self):
         while self.msglayout.count() > 1:
@@ -596,6 +746,7 @@ class ChatWindow(QWidget):
     def set_busy(self, busy):
         self.sendbutton.setText('중지' if busy else '보내기')
         self.tabs.setEnabled(not busy)
+        self.list_button.setEnabled(not busy)
         self.new_button.setEnabled(not busy)
         self.character_select.setEnabled(not busy)
         self.status.setText(CHARACTERS[self.c.store.character]['name'] + '가 생각하고 있어요…' if busy else '대화할 준비가 됐어요.')
@@ -619,6 +770,14 @@ class ChatWindow(QWidget):
         e.ignore()
 
 
+class PortfolioPages(QStackedWidget):
+    def minimumSizeHint(self): return QSize(200, 160)
+    def sizeHint(self): return QSize(700, 340)
+    def addTab(self, widget, title):
+        widget.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        return self.addWidget(widget)
+
+
 class StockWindow(QWidget):
     """Read-only quotes plus a locally stored manual portfolio."""
     def __init__(self, controller):
@@ -632,12 +791,15 @@ class StockWindow(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(18, 18, 18, 18)
         header = QHBoxLayout()
-        header.addWidget(label('주식 · 나의 포트폴리오', 'title'))
+        header.addWidget(label('내 자산', 'title'))
+        self.view_picker = QComboBox()
+        self.view_picker.addItems(['보유종목', '도넛 그래프', '월별 성과', '관심종목', '매매 기록'])
+        header.addWidget(self.view_picker)
         header.addStretch()
         self.refresh_button = button('시세 새로고침', self.refresh)
         header.addWidget(self.refresh_button)
         outer.addLayout(header)
-        note = label('30초 자동 갱신 · Yahoo Finance 공개 데이터(비공식 연결) · 거래소에 따라 지연될 수 있음 · 주문 기능 없음', 'notice')
+        note = label('종목을 더블클릭하면 차트가 열려요. 시세는 지연될 수 있어요.', 'muted')
         note.setWordWrap(True)
         outer.addWidget(note)
         self.table = QTableWidget(0, 7)
@@ -645,12 +807,31 @@ class StockWindow(QWidget):
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.cellDoubleClicked.connect(lambda row, col: self.open_chart(row))
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self.chart_menu)
         self.table.verticalHeader().hide()
         self.table.verticalHeader().setDefaultSectionSize(36)
+        self.table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.table.setMinimumHeight(160)
+        self.table.setWordWrap(False)
+        self.table.horizontalHeader().setMinimumSectionSize(70)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         for column in range(1, 7):
             self.table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeToContents)
-        outer.addWidget(self.table, 1)
+        for column in (2,5,6): self.table.setColumnHidden(column,True)
+        from portfolio_views import AllocationView
+        self.views = PortfolioPages()
+        self.view_picker.currentIndexChanged.connect(self.views.setCurrentIndex)
+        self.views.addTab(self.table, '보유종목')
+        self.allocation = AllocationView(self)
+        self.views.addTab(self.allocation, '도넛 그래프')
+        from investment_tools import RecordView
+        for key, title in [('months', '월별 성과'), ('watchlist', '관심종목'), ('trades', '매매 기록')]:
+            self.views.addTab(RecordView(self, key), title)
+        self.views.currentChanged.connect(lambda _: self.allocation.refresh())
+        outer.addWidget(self.views, 1)
         totals = QHBoxLayout()
         self.krw_total = label('원화 평가액 —', 'badge')
         self.usd_total = label('달러 평가액 —', 'badge')
@@ -660,7 +841,11 @@ class StockWindow(QWidget):
         totals.addStretch()
         totals.addWidget(self.updated)
         outer.addLayout(totals)
-        entry = QHBoxLayout()
+        self.position_dialog = QDialog(self)
+        self.editing_position = None
+        self.position_dialog.setWindowTitle('자산 추가 / 수정')
+        self.position_dialog.resize(420, 490)
+        entry = QFormLayout(self.position_dialog)
         self.market = QComboBox()
         self.market.addItem('미국', 'US')
         self.market.addItem('국내 KRX', 'KRX')
@@ -679,12 +864,26 @@ class StockWindow(QWidget):
         self.average.setRange(0, 1_000_000_000_000)
         self.average.setDecimals(4)
         self.average.setPrefix('평단 ')
-        for widget, stretch in ((self.market, 0), (self.symbol, 1), (self.stock_name, 1),
-                                (self.quantity, 1), (self.average, 1)):
-            entry.addWidget(widget, stretch)
-        entry.addWidget(button('추가/수정', self.add_position, 'primary'))
-        entry.addWidget(button('선택 삭제', self.remove_position))
-        outer.addLayout(entry)
+        for title, widget in [('시장', self.market), ('종목 코드', self.symbol), ('이름', self.stock_name), ('수량 / 현금 금액', self.quantity), ('평균 매입가', self.average)]:
+            entry.addRow(title, widget)
+        self.account = QLineEdit('기본 계좌'); self.account.setPlaceholderText('계좌 이름'); self.account.setMaxLength(60)
+        self.sector = QLineEdit('미분류'); self.sector.setPlaceholderText('섹터'); self.sector.setMaxLength(60)
+        self.cash_position = QCheckBox('현금 (수량에 금액 입력)')
+        entry.addRow('계좌 이름', self.account); entry.addRow('섹터', self.sector); entry.addRow(self.cash_position)
+        entry.addRow(button('저장', self.add_position, 'primary'))
+        entry.addRow(button('닫기', self.position_dialog.reject))
+        self.cash_position.toggled.connect(lambda checked: self.symbol.setEnabled(not checked))
+        self.cash_position.toggled.connect(lambda checked: self.average.setEnabled(not checked))
+        actions=QHBoxLayout()
+        actions.addWidget(button('+ 자산 추가', self.new_position, 'primary'))
+        actions.addWidget(button('선택 수정', self.show_position_editor))
+        actions.addWidget(button('선택 삭제', self.remove_position))
+        self.show_profit = QCheckBox('손익 자세히')
+        self.show_profit.toggled.connect(lambda visible: [self.table.setColumnHidden(column,not visible) for column in (2,5,6)])
+        actions.addWidget(self.show_profit)
+        actions.addStretch()
+        self.asset_actions=QWidget(); self.asset_actions.setLayout(actions); outer.addWidget(self.asset_actions)
+        self.views.currentChanged.connect(lambda index: self.asset_actions.setVisible(index==0))
         self.market_client = MarketClient(self)
         self.market_client.quoteLoaded.connect(self.quote_loaded)
         self.market_client.failed.connect(self.quote_failed)
@@ -694,19 +893,52 @@ class StockWindow(QWidget):
         self.auto_timer.start(30000)
         self.render()
 
+    def new_position(self):
+        self.editing_position = None
+        self.symbol.clear(); self.stock_name.clear(); self.quantity.setValue(0); self.average.setValue(0)
+        self.cash_position.setChecked(False)
+        self.position_dialog.exec()
+
+    def show_position_editor(self):
+        if self.table.currentRow()<0: return
+        self.edit_position(); self.position_dialog.exec()
+
+    def edit_position(self):
+        row = self.table.currentRow()
+        if not 0 <= row < len(self.c.store.portfolio): return
+        self.editing_position = row
+        item = self.c.store.portfolio[row]
+        self.market.setCurrentIndex(self.market.findData(item['market']))
+        self.symbol.setText(item['symbol']); self.stock_name.setText(item['name'])
+        self.quantity.setValue(item['quantity']); self.average.setValue(item['average'])
+        self.account.setText(item.get('account', '기본 계좌')); self.sector.setText(item.get('sector', '미분류'))
+        self.cash_position.setChecked(item.get('cash', False))
+
     def add_position(self):
         from stocks import provider_symbol
         symbol = self.symbol.text().strip().upper()
         market = self.market.currentData()
+        cash = self.cash_position.isChecked()
+        if cash: symbol = 'CASH-USD' if market == 'US' else 'CASH-KRW'
         try:
-            provider_symbol(symbol, market)
+            if not cash: provider_symbol(symbol, market)
         except ValueError as exc:
             QMessageBox.information(self, '종목 코드 확인', str(exc))
             return
         value = dict(symbol=symbol, market=market, name=self.stock_name.text().strip(),
-                     quantity=self.quantity.value(), average=self.average.value())
+                     quantity=self.quantity.value(), average=1 if cash else self.average.value(),
+                     account=self.account.text().strip() or '기본 계좌', sector=self.sector.text().strip() or '미분류',
+                     currency='USD' if market == 'US' else 'KRW', cash=cash)
         existing = next((i for i, p in enumerate(self.c.store.portfolio)
-                         if p['symbol'] == symbol and p['market'] == market), None)
+                         if p['symbol'] == symbol and p['market'] == market and p.get('account', '기본 계좌') == value['account']), None)
+        if self.editing_position is not None:
+            if existing is not None and existing != self.editing_position:
+                QMessageBox.information(self, '중복 자산', '같은 계좌에 이미 있는 종목입니다. 해당 자산을 선택해 수정하세요.')
+                return
+            existing = self.editing_position
+        previous = list(self.c.store.portfolio)
+        self.market_client.cancel(emit=False)
+        self.quotes = {}
         if existing is None:
             if len(self.c.store.portfolio) >= 100:
                 QMessageBox.information(self, '포트폴리오', '종목은 최대 100개까지 저장할 수 있어요.')
@@ -714,9 +946,40 @@ class StockWindow(QWidget):
             self.c.store.portfolio.append(value)
         else:
             self.c.store.portfolio[existing] = value
-        self.c.persist()
+        try: self.c.store.save()
+        except OSError:
+            self.c.store.portfolio = previous
+            QMessageBox.warning(self.position_dialog, '저장 실패', '장부를 저장하지 못했습니다. 저장 공간과 권한을 확인하세요.')
+            return
+        self.editing_position = None
+        self.position_dialog.accept()
         self.render()
         self.refresh()
+
+    def open_chart(self, row):
+        if not 0 <= row < len(self.c.store.portfolio): return
+        from charts import ChartWindow
+        from stocks import provider_symbol
+        item = self.c.store.portfolio[row]
+        if item.get('cash'): return
+        dialog = ChartWindow(provider_symbol(item['symbol'], item['market']), self)
+        dialog.canvas.trades = [t for t in self.c.store.investments['trades'] if t['symbol'] == item['symbol'] and t['market'] == item['market'] and t['account'] == item.get('account', '기본 계좌')]
+        dialog.exec()
+
+    def chart_menu(self, pos):
+        row = self.table.rowAt(pos.y())
+        if row < 0: return
+        from stocks import provider_symbol
+        from urllib.parse import quote
+        item = self.c.store.portfolio[row]
+        if item.get('cash'): return
+        symbol = provider_symbol(item['symbol'], item['market'])
+        menu = QMenu(self)
+        menu.addAction('내부 차트', lambda: self.open_chart(row))
+        tv = ('KRX:' + item['symbol']) if item['market'] in ('KRX', 'KOSDAQ') else item['symbol']
+        menu.addAction('TradingView', lambda: QDesktopServices.openUrl(QUrl('https://www.tradingview.com/chart/?symbol=' + quote(tv, safe=''))))
+        menu.addAction('Yahoo Finance', lambda: QDesktopServices.openUrl(QUrl('https://finance.yahoo.com/quote/' + quote(symbol, safe=''))))
+        menu.exec(self.table.mapToGlobal(pos))
 
     def remove_position(self):
         row = self.table.currentRow()
@@ -760,8 +1023,11 @@ class StockWindow(QWidget):
         totals = {'KRW': 0.0, 'USD': 0.0}
         for row, position in enumerate(self.c.store.portfolio):
             quote = self.quotes.get(row, {})
+            if position.get('cash'):
+                quote = dict(price=1, percent=None, currency=position.get('currency', 'KRW'))
             market = '미국' if position['market'] == 'US' else position['market']
             title = position['name'] or position['symbol']
+            if position.get('account', '기본 계좌') != '기본 계좌': title += ' · ' + position['account']
             values = [f'{title} · {market}/{position["symbol"]}', '—', '—', f'{position["quantity"]:,.6f}'.rstrip('0').rstrip('.'), '—', '—', '—']
             if quote.get('error'):
                 values[1] = '오류'
@@ -787,6 +1053,7 @@ class StockWindow(QWidget):
                 self.table.setItem(row, column, cell)
         self.krw_total.setText('원화 평가액 ' + self.number(totals['KRW'], 'KRW'))
         self.usd_total.setText('달러 평가액 ' + self.number(totals['USD'], 'USD'))
+        self.allocation.refresh()
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -1007,6 +1274,10 @@ class Controller:
         self.client = ChatClient(self.chat)
         self.client.answered.connect(self.on_answer)
         self.client.failed.connect(self.on_error)
+        self.folder_root = None
+        from folder_agent import FolderAgent
+        self.folder_agent = FolderAgent(self)
+        self.folder_agent.done.connect(self.on_answer)
         self.pet = PetWindow(self)
         self.stocks = StockWindow(self)
         self.tray = None
@@ -1040,12 +1311,17 @@ class Controller:
 
     def open_chat(self):
         area = self.pet.area()
-        scale = self.store.settings['interface_scale'] / 100
-        self.chat.resize(min(round(460 * scale), area.width()), min(round(680 * scale), area.height()))
-        x = self.pet.x() - self.chat.width() - 12
-        if x < area.left():
+        saved = self.store.settings['window_geometry']
+        valid = all(type(saved.get(k)) is int for k in ('x', 'y', 'width', 'height'))
+        if valid:
+            target = QApplication.screenAt(QPoint(saved['x'], saved['y']))
+            if target:
+                area = target.availableGeometry()
+        self.chat.resize(min(max(420, saved['width'] if valid else 560), area.width()), min(max(360, saved['height'] if valid else 680), area.height()))
+        x = saved['x'] if valid else self.pet.x() - self.chat.width() - 12
+        if not valid and x < area.left():
             x = self.pet.x() + self.pet.width() + 12
-        y = self.pet.y() + self.pet.height() - self.chat.height()
+        y = saved['y'] if valid else self.pet.y() + self.pet.height() - self.chat.height()
         self.chat.move(clamp_position(QPoint(x, y), self.chat.size(), area))
         self.chat.show()
         self.chat.raise_()
@@ -1054,7 +1330,7 @@ class Controller:
 
     def open_stocks(self):
         area = self.pet.area()
-        scale = self.store.settings['interface_scale'] / 100
+        scale = 1
         self.stocks.resize(min(round(850 * scale), area.width()), min(round(560 * scale), area.height()))
         self.stocks.move(clamp_position(QPoint(area.center().x() - self.stocks.width() // 2,
                                                area.center().y() - self.stocks.height() // 2),
@@ -1074,8 +1350,8 @@ class Controller:
 
     def apply_appearance(self):
         settings = self.store.settings
-        scale = settings['interface_scale'] / 100
-        self.chat.setMinimumSize(round(360 * scale), round(420 * scale))
+        scale = 1
+        self.chat.setMinimumSize(420, 360)
         self.stocks.setMinimumSize(round(680 * scale), round(440 * scale))
         self.chat.setWindowOpacity(settings['interface_opacity'] / 100)
         self.stocks.setWindowOpacity(settings['interface_opacity'] / 100)
@@ -1097,9 +1373,31 @@ class Controller:
             self.pet.show()
             self.open_chat()
 
+    def choose_folder(self):
+        if self.busy: return
+        root=QFileDialog.getExistingDirectory(self.chat, '이즈나가 작업할 폴더 선택')
+        if not root: return
+        if QMessageBox.question(self.chat, '폴더 작업 연결', '선택한 폴더: '+root+'\n\n이 모드의 채팅은 이 폴더를 대상으로 합니다. 파일 이름과 읽은 텍스트가 선택한 AI 서비스로 전송됩니다. 이동·저장은 계획 확인 후 실행합니다.\n연결할까요?') != QMessageBox.Yes: return
+        self.folder_root=root
+        self.chat.folder_indicator.setText('폴더 작업: '+Path(root).name+' · 클릭하여 종료')
+        self.chat.folder_indicator.setToolTip(root)
+        self.chat.folder_indicator.show()
+        self.chat.input.setPlaceholderText('폴더 작업: 정리하고 감상.txt로 저장해줘')
+        self.chat.status.setText('폴더 작업 모드 · '+root+' · 종료: ⋯ 메뉴')
+
+    def clear_folder(self):
+        if self.busy: return
+        self.folder_root=None
+        self.chat.folder_indicator.hide()
+        self.chat.input.setPlaceholderText('메시지를 입력하세요')
+        self.chat.status.setText('폴더 작업을 종료했어요.')
+
     def send(self, text):
         text = text.strip()[:4000]
         if not text or self.busy:
+            return False
+        if self.folder_root and self.store.settings['demo']:
+            self.chat.status.setText('폴더 작업에는 실제 AI 연결이 필요해요. 설정에서 데모를 끄고 API를 연결하세요.')
             return False
         if not self.store.settings['demo'] and self.store.settings['provider'] != 'ollama' and not self.vault.session_key:
             self.chat.status.setText('설정에서 API 키를 입력해 주세요.')
@@ -1111,7 +1409,9 @@ class Controller:
         self.busy = True
         self.chat.set_busy(True)
         self.pet.expression('thinking', 185)
-        if self.store.settings['demo']:
+        if self.folder_root:
+            self.folder_agent.start(self.folder_root,text)
+        elif self.store.settings['demo']:
             self.demo_timer.start(650)
         else:
             self.continue_request()
@@ -1145,9 +1445,11 @@ class Controller:
             self.continue_request()
             return
         self.store.history.extend([self.pending, {'role': 'assistant', 'content': text, 'character': self.store.character}])
+        self.store.active_chat['updated_at'] = datetime.now().astimezone().isoformat()
         if self.store.active_chat['title'] == '새 대화':
             self.store.active_chat['title'] = self.pending['content'][:16]
             self.chat.tabs.setTabText(self.chat.tabs.currentIndex(), self.store.active_chat['title'])
+        self.chat.refresh_status()
         self.store.active_chat['draft'] = ''
         self.pending = None
         self.busy = False
@@ -1170,6 +1472,7 @@ class Controller:
         self.pet.expression('confused', 8)
 
     def cancel(self):
+        if not self.folder_agent.cancel(): return
         self.demo_timer.stop()
         self.client.cancel()
         if self.pending:
@@ -1243,6 +1546,8 @@ class Controller:
         self.pet.ensure_visible()
 
     def shutdown(self):
+        self.folder_agent.cancel()
+        self.chat.save_geometry()
         self.startup_timer.stop()
         self.chat.scroll_timer.stop()
         self.demo_timer.stop()

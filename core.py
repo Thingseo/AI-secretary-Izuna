@@ -6,6 +6,8 @@ import os
 import sys
 import uuid
 import copy
+import math
+from datetime import datetime, timezone
 from pathlib import Path
 
 APP_NAME = 'IzunaDesktop'
@@ -30,7 +32,7 @@ EMOTIONS.update({
 AI_EMOTIONS = [e for e in EMOTIONS if e not in ('aroused', 'lustful', 'seductive smiling', 'middle finger', 'walking to left', 'walking to right')]
 
 DEFAULTS = dict(provider='openai', ollama_url='http://localhost:11434', click_effect=True,
-                interface_scale=100, pet_opacity=100, interface_opacity=100,
+                window_geometry={}, investment_options={}, default_character='izuna', pet_opacity=100, interface_opacity=100,
                 pet_on_top=True, chat_on_top=True,
                 profiles={}, provider_models={}, model='gpt-5.6-luna', demo=True, size=260, speed=42,
                 roam=True, remember=True, memo='', nickname='주군',
@@ -77,7 +79,8 @@ class Store:
         self.settings['provider_models'] = {k: v for k, v in self.settings['provider_models'].items() if k in PROVIDERS and isinstance(v, str)}
         self.settings['size'] = max(160, min(400, self.settings['size']))
         self.settings['speed'] = max(15, min(100, self.settings['speed']))
-        self.settings['interface_scale'] = max(75, min(150, self.settings['interface_scale']))
+        if self.settings['default_character'] not in CHARACTERS:
+            self.settings['default_character'] = 'izuna'
         self.settings['pet_opacity'] = max(25, min(100, self.settings['pet_opacity']))
         self.settings['interface_opacity'] = max(35, min(100, self.settings['interface_opacity']))
         self.profiles = self.settings['profiles']
@@ -108,6 +111,7 @@ class Store:
                 for field in ('summary', 'memo', 'draft'):
                     if isinstance(item.get(field), str):
                         chat[field] = item[field]
+                chat['updated_at'] = item.get('updated_at', '') if isinstance(item.get('updated_at', ''), str) else ''
                 end = item.get('summary_until', 0)
                 if type(end) is int and 0 <= end <= len(chat['messages']) and chat['summary']:
                     chat['summary_until'] = end
@@ -121,10 +125,19 @@ class Store:
         selected = state.get('active_id') if isinstance(state, dict) else None
         self.active_id = selected if any(c['id'] == selected for c in self.chats) else self.chats[0]['id']
         self.portfolio = clean_portfolio(read_json(self.root / 'portfolio.json', []))
+        state_path = self.root / 'portfolio-state.json'
+        state = read_json(state_path, None)
+        if state_path.exists() and (not isinstance(state, dict) or state.get('version') != 1):
+            raise ValueError('portfolio-state.json을 읽지 못했습니다. 파일을 백업하고 복구하세요.')
+        self.investments = dict(version=1, watchlist=[], trades=[], months=[])
+        if isinstance(state, dict):
+            self.portfolio = clean_portfolio(state.get('positions', []))
+            for field in ('watchlist', 'trades', 'months'):
+                if isinstance(state.get(field), list): self.investments[field] = state[field]
 
     @staticmethod
     def make_chat(title, character):
-        return dict(id=uuid.uuid4().hex, title=title, character=character, messages=[], summary='', summary_until=0, memo='', draft='')
+        return dict(id=uuid.uuid4().hex, title=title, character=character, messages=[], summary='', summary_until=0, memo='', draft='', updated_at=datetime.now(timezone.utc).isoformat())
 
     @property
     def active_chat(self):
@@ -148,10 +161,11 @@ class Store:
         self.active_chat['messages'] = value
 
     def new_chat(self, character=None, duplicate=False):
-        chat = copy.deepcopy(self.active_chat) if duplicate else self.make_chat('새 대화', character or self.character)
+        chat = copy.deepcopy(self.active_chat) if duplicate else self.make_chat('새 대화', character or self.settings['default_character'])
         if duplicate:
             chat['id'] = uuid.uuid4().hex
             chat['title'] = (chat['title'] + ' 복사')[:60]
+            chat['updated_at'] = datetime.now(timezone.utc).isoformat()
         self.chats.append(chat)
         self.active_id = chat['id']
         return chat
@@ -186,6 +200,7 @@ class Store:
 
     def save(self):
         atomic_json(self.root / 'settings.json', {k: self.settings[k] for k in DEFAULTS})
+        atomic_json(self.root / 'portfolio-state.json', dict(self.investments, positions=self.portfolio))
         atomic_json(self.root / 'portfolio.json', self.portfolio)
         if self.settings['remember']:
             atomic_json(self.root / 'chats.json', dict(version=1, active_id=self.active_id, chats=self.chats))
@@ -227,9 +242,13 @@ def clean_portfolio(raw):
             average = float(item.get('average', 0))
         except (TypeError, ValueError):
             continue
-        if symbol and market in ('US', 'KRX', 'KOSDAQ') and quantity >= 0 and average >= 0:
+        if symbol and market in ('US', 'KRX', 'KOSDAQ') and math.isfinite(quantity) and math.isfinite(average) and quantity >= 0 and average >= 0:
             result.append(dict(symbol=symbol, market=market,
                                name=str(item.get('name', '')).strip()[:40],
+                               account=str(item.get('account') or '기본 계좌')[:60],
+                               sector=str(item.get('sector') or '미분류')[:60],
+                               currency='USD' if market == 'US' else 'KRW',
+                               cash=item.get('cash') is True,
                                quantity=quantity, average=average))
     return result[:100]
 

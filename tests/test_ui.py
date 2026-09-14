@@ -159,7 +159,7 @@ class UITests(unittest.TestCase):
         self.c.chat.new_tab()
         self.c.chat.character_select.setCurrentIndex(1)
         self.assertEqual(self.c.store.character, 'kokona')
-        self.assertIn('코코나', self.c.chat.character_title.text())
+        self.assertIn('코코나', self.c.chat.badge.text())
         self.assertFalse(self.c.pet.pix.isNull())
         self.c.send('안녕')
         self.c.chat.new_tab()  # Busy operations are ignored.
@@ -183,7 +183,7 @@ class UITests(unittest.TestCase):
         self.assertAlmostEqual(self.c.stocks.windowOpacity(), .75, places=2)
         self.assertFalse(bool(self.c.pet.windowFlags() & Qt.WindowStaysOnTopHint))
         self.assertFalse(bool(self.c.chat.windowFlags() & Qt.WindowStaysOnTopHint))
-        self.assertEqual(self.c.chat.minimumWidth(), 288)
+        self.assertEqual(self.c.chat.minimumWidth(), 420)
 
     def test_portfolio_round_trip_and_stock_window(self):
         self.c.stocks.market_client.fetch = lambda positions: None
