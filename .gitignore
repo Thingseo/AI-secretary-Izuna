@@ -216,3 +216,15 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+*.dpapi
+*.sqlite
+*.sqlite-*
+*.sqlite.*
+*.bak
+portfolio.json
+settings.json
+history.json
+chats.json
+startup-error.log
+*.csv
